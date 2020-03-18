@@ -142,7 +142,7 @@ struct Slider {
 
           // after a short time of running at full speed to get the motor started, set speed by PWM
           delayMicroseconds(adelta > 200 ? 150 : 80);
-          analogWrite(speedPin, map(adelta, 0, limit, highSpeed ? 0 : 100, 255));
+          analogWrite(speedPin, map(adelta, 0, limit, highSpeed ? 0 : 110, 255));
         }
 
         oldADelta = adelta;
@@ -182,22 +182,22 @@ struct Slider {
   long lastReportedTime = -1;
 
   void touch() {
-    const int pos = readPos();
+    currentPos = readPos();
 
-    if (pos != lastReportedValue || abs(millis() - lastReportedTime) > 500) {
+    if (currentPos != lastReportedValue || abs(millis() - lastReportedTime) > 500) {
       Serial.print('{');
       Serial.print(channelName);
       Serial.print(':');
-      Serial.print(pos);
+      Serial.print(currentPos);
       Serial.println('}');
 
-      lastReportedValue = pos;
+      lastReportedValue = currentPos;
       lastReportedTime = millis();
     }
 
     wasTouched = false;
 
-    if (pos == 127 || pos == 128) {
+    if (currentPos == 127 || currentPos == 128) {
       // try to bring the slider to the center and keep it there
       const int delta = analogRead(posPin) - 511;
 
