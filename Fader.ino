@@ -32,6 +32,28 @@
 // Threshold value above which the sensor is definitely touched
 #define TOUCHSENSE 100
 
+int absolute(int relative) {
+  if (relative == 127 || relative == 128)
+    return 511;
+
+  int ret = round(relative * 3.75);
+
+  if (relative > 128)
+    ret += 66;
+
+  return ret;
+}
+
+int relative(int absolute) {
+  if (absolute <= 476)
+    return round(absolute / 3.75);
+
+  if (absolute >= 548)
+    return round((absolute - 66) / 3.75);
+
+  return 128;
+}
+
 struct Slider {
   int currentPos = -1;
 
@@ -39,12 +61,16 @@ struct Slider {
   int speedPin;
   int posPin;
   int brakePin;
+  char channelName;
 
-  Slider::Slider(int dir, int speed, int pos, int brake) {
+  boolean wasTouched = false;
+
+  Slider::Slider(int dir, int speed, int pos, int brake, char name) {
     dirPin = dir;
     speedPin = speed;
     posPin = pos;
     brakePin = brake;
+    channelName = name;
 
     pinMode(dirPin, OUTPUT);
     pinMode(speedPin, OUTPUT);
@@ -66,17 +92,17 @@ struct Slider {
     if (newPos == currentPos)
       return;
 
-    // how far are we from the target position
-    int delta = readPos() - newPos;
+    // target position in absolute values
+    const int target = absolute(newPos);
 
-    if (delta == 0) {
+    // how far are we from the target position
+    int delta = analogRead(posPin) - target;
+
+    if (abs(delta) < 2) {
       // weird, we were already there, remember the position for next iteration
       currentPos = newPos;
       return;
     }
-
-    // target position in absolute values
-    int target = newPos * 4;
 
     // when the distance is larger than this, run at full speed. Below this distance, run slower
     const int limit = 900;
@@ -96,7 +122,9 @@ struct Slider {
       // by starting at full speed then slowing down as it gets closer to the target.
       // Thresholds are experimentally set for the 12V power supply
       while ((adelta = abs(delta = analogRead(posPin) - target)) > 1) {
+
         // give the motor a full voltage to start moving
+        digitalWrite(dirPin, delta > 0 ? 1 : 0);
         digitalWrite(speedPin, 1);
 
         if (adelta < limit) {
@@ -117,8 +145,6 @@ struct Slider {
           analogWrite(speedPin, map(adelta, 0, limit, highSpeed ? 0 : 100, 255));
         }
 
-        digitalWrite(dirPin, delta > 0 ? 1 : 0);
-
         oldADelta = adelta;
 
         // don't insist for too long, bail out if we can't reach the target position in a reasonable time
@@ -130,7 +156,7 @@ struct Slider {
       digitalWrite(speedPin, 0);
 
       if (cnt == 0 ) {
-        if (wasZero){
+        if (wasZero) {
           // was already in the target position, we're done
           break;
         }
@@ -148,17 +174,84 @@ struct Slider {
 
   int Slider::readPos() {
     // 256 values, 128 for each direction, same max number of speed steps as supported by loco decoders
-    return analogRead(posPin) / 4;
+
+    return relative(analogRead(posPin));
+  }
+
+  int lastReportedValue = -1;
+  long lastReportedTime = -1;
+
+  void touch() {
+    const int pos = readPos();
+
+    if (pos != lastReportedValue || abs(millis() - lastReportedTime) > 500) {
+      Serial.print('{');
+      Serial.print(channelName);
+      Serial.print(':');
+      Serial.print(pos);
+      Serial.println('}');
+
+      lastReportedValue = pos;
+      lastReportedTime = millis();
+    }
+
+    wasTouched = false;
+
+    if (pos == 127 || pos == 128) {
+      // try to bring the slider to the center and keep it there
+      const int delta = analogRead(posPin) - 511;
+
+      const int adelta = abs(delta);
+
+      if (adelta > 2) {
+        digitalWrite(dirPin, delta > 0 ? 1 : 0);
+        analogWrite(speedPin, map(adelta, 0, 40, 130, 100));
+        wasTouched = true;
+      }
+      else {
+        digitalWrite(speedPin, LOW);
+      }
+    }
+    else {
+      digitalWrite(speedPin, LOW);
+    }
+  }
+
+  void release() {
+    if (wasTouched) {
+      digitalWrite(speedPin, LOW);
+      wasTouched = false;
+
+      const int pos = readPos();
+
+      if (pos == 127 || pos == 128) {
+        currentPos = -1;
+        setPos(128);
+      }
+    }
   }
 };
 
 // Position reading and setting wrappers for the two faders
-Slider sliderA = Slider(DIRA, SPEEDA, SLIDERA, BRAKEA);
-Slider sliderB = Slider(DIRB, SPEEDB, SLIDERB, BRAKEB);
+Slider sliderA = Slider(DIRA, SPEEDA, SLIDERA, BRAKEA, 'A');
+Slider sliderB = Slider(DIRB, SPEEDB, SLIDERB, BRAKEB, 'B');
 
 // Capacitive sensors to detect when a finger is placed on the fader
 CapacitiveSensor cs_4_2 = CapacitiveSensor(4, 2);
 CapacitiveSensor cs_4_6 = CapacitiveSensor(4, 6);
+
+void reset() {
+  sliderA.currentPos = -1;
+  sliderB.currentPos = -1;
+
+  // start at mid range -> neutral speed for the throttle
+  sliderA.setPos(128);
+  sliderB.setPos(128);
+}
+
+void version() {
+  Serial.println("{Fader:v1}");
+}
 
 void setup() {
   Serial.begin(115200);
@@ -169,9 +262,9 @@ void setup() {
   cs_4_2.set_CS_Timeout_Millis(200);
   cs_4_6.set_CS_Timeout_Millis(200);
 
-  // start at mid range -> neutral speed for the throttle
-  sliderA.setPos(128);
-  sliderB.setPos(128);
+  reset();
+
+  version();
 }
 
 // new setting received from JMRI for one of the faders
@@ -180,33 +273,53 @@ int newValue = 0;
 void loop() {
   long total1 =  cs_4_6.capacitiveSensor(SAMPLES);
 
+  boolean ignoreA;
+
   if (total1 > TOUCHSENSE) {
     // When channel A is touched it becomes the master and sends the new position to JMRI
-    Serial.print("{A:");
-    Serial.print(sliderA.readPos());
-    Serial.println("}");
+    sliderA.touch();
+    ignoreA = true;
+  }
+  else {
+    sliderA.release();
+    ignoreA = false;
   }
 
   total1 = cs_4_2.capacitiveSensor(SAMPLES);
 
+  boolean ignoreB;
+
   if (total1 > TOUCHSENSE) {
-    // When channel A is touched it becomes the master and sends the new position to JMRI
-    Serial.print("{B:");
-    Serial.print(sliderB.readPos());
-    Serial.println("}");
+    // When channel B is touched it becomes the master and sends the new position to JMRI
+    sliderB.touch();
+    ignoreB = true;
+  }
+  else {
+    sliderB.release();
+    ignoreB = false;
   }
 
   if (Serial.available() > 0) {
     // New position is received from JMRI as a "<position><channel>" string
-    int newByte = Serial.read();
+    const int newByte = Serial.read();
 
-    if (newByte >= '0' && newByte <= '9')
+    if (newByte == 'r') {
+      reset();
+    }
+    else if (newByte == 'v') {
+      version();
+    }
+    else if (newByte >= '0' && newByte <= '9')
       newValue = newValue * 10 + newByte - '0';
     else {
-      if (newByte == 'a' || newByte == 'A')
-        sliderA.setPos(newValue);
-      else if (newByte == 'b' || newByte == 'B')
-        sliderB.setPos(newValue);
+      if (newByte == 'a' || newByte == 'A') {
+        if (!ignoreA)
+          sliderA.setPos(newValue);
+      }
+      else if (newByte == 'b' || newByte == 'B') {
+        if (!ignoreB)
+          sliderB.setPos(newValue);
+      }
 
       newValue = 0;
     }
