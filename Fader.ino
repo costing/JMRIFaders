@@ -153,7 +153,8 @@ struct Slider {
       }
 
       digitalWrite(brakePin, HIGH);
-      digitalWrite(speedPin, 0);
+      digitalWrite(speedPin, LOW);
+      digitalWrite(dirPin, LOW);
 
       if (cnt == 0 ) {
         if (wasZero) {
@@ -195,8 +196,6 @@ struct Slider {
       lastReportedTime = millis();
     }
 
-    wasTouched = false;
-
     if (currentPos == 127 || currentPos == 128) {
       // try to bring the slider to the center and keep it there
       const int delta = analogRead(posPin) - 511;
@@ -219,6 +218,7 @@ struct Slider {
 
   void release() {
     if (wasTouched) {
+      digitalWrite(dirPin, LOW);
       digitalWrite(speedPin, LOW);
       wasTouched = false;
 
@@ -241,6 +241,9 @@ CapacitiveSensor cs_4_2 = CapacitiveSensor(4, 2);
 CapacitiveSensor cs_4_6 = CapacitiveSensor(4, 6);
 
 void reset() {
+  cs_4_2.reset_CS_AutoCal();
+  cs_4_6.reset_CS_AutoCal();
+  
   sliderA.currentPos = -1;
   sliderB.currentPos = -1;
 
