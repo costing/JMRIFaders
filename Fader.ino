@@ -246,10 +246,6 @@ void reset() {
   
   sliderA.currentPos = -1;
   sliderB.currentPos = -1;
-
-  // start at mid range -> neutral speed for the throttle
-  sliderA.setPos(128);
-  sliderB.setPos(128);
 }
 
 void version() {
@@ -266,8 +262,6 @@ void setup() {
   cs_4_6.set_CS_Timeout_Millis(200);
 
   reset();
-
-  version();
 }
 
 // new setting received from JMRI for one of the faders
